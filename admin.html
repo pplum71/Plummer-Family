@@ -203,13 +203,16 @@
 
         <section id="photos" class="card route">
           <div class="hd">
-            <h2>Photos (local‑only)</h2>
-            <button class="btn secondary admin-only" id="clearPhotos">Clear</button>
+            <h2>Photos</h2>
+            <div class="row" style="gap:8px;align-items:center">
+              <button class="btn admin-only" id="addRepoPhoto">Add Repo Photo</button>
+              <button class="btn secondary admin-only" id="clearPhotos">Clear</button>
+            </div>
           </div>
           <div class="bd stack">
             <div id="dropzone" class="card admin-only" style="padding:20px;border-style:dashed;text-align:center">Drop images here or click to select<input id="photoInput" type="file" accept="image/*" multiple style="display:none"/></div>
             <div id="photoGrid" style="display:grid;grid-template-columns:repeat(auto-fill,minmax(180px,1fr));gap:12px"></div>
-            <p class="muted">Images stay in your browser (localStorage). To put them online, upload the images to your repo and switch this tool to reference files instead of data URLs.</p>
+            <p id="photosModeNote" class="muted">Images stay in your browser (localStorage). To put them online, upload files to a <code>/photos<\/code> folder in your repo, then add them here as “repo photos.”</p>
           </div>
         </section>
 
@@ -255,6 +258,16 @@
             <details>
               <summary><b>Customize the crest/logo</b></summary>
               <p>Replace the inline SVG in the header with your own SVG or an <code>&lt;img&gt;</code> pointing to <code>/assets/crest.png</code>. We can also design a more detailed crest later.</p>
+            </details>
+            <details>
+              <summary><b>Switch photos to repo files</b></summary>
+              <ol>
+                <li>Create a folder named <code>photos</code> at the root of your repo.</li>
+                <li>Upload your images there (e.g., <code>photos/amelia-1965.jpg</code>).</li>
+                <li>Open this site in admin mode and click <b>Add Repo Photo</b>, then enter the filename and a caption.</li>
+                <li>Optional: add <code>?photos=repo</code> to the URL to hide the local dropzone for this session.</li>
+                <li>Public visitors never see the upload dropzone; they only see the gallery.</li>
+              </ol>
             </details>
             <details>
               <summary><b>Data model (for reference)</b></summary>
@@ -352,6 +365,9 @@
   const PUBLIC_MODE = !ADMIN_MODE;
   document.body.classList.toggle('public', PUBLIC_MODE);
 
+  // Photo mode: 'local' (data URLs in browser) or 'repo' (files in /photos)
+  const PHOTO_MODE = (new URLSearchParams(location.search).get('photos')) || (PUBLIC_MODE ? 'repo' : 'local');
+
   const tabs = [
     { id:"home", label:"Home" },
     { id:"tree", label:"Family Tree" },
@@ -378,6 +394,7 @@
   // Persistent store
   const KEY = "plummer_family_data_v1";
   let store = loadLocal() || seed;
+  let currentRootId = null;
 
   // Build Tabs
   function buildTabs(){
@@ -543,16 +560,43 @@
     }
   });
 
-  // Photos (kept in localStorage only for demo)
+  // Photos (repo or local mode)
   function renderPhotos(){
     const grid = $('#photoGrid'); grid.innerHTML='';
     store.photos.forEach(ph=>{
       const fig = document.createElement('figure'); fig.className='card'; fig.style.padding='8px';
-      fig.innerHTML = `<img src="${ph.dataUrl}" alt="photo" style="width:100%;height:160px;object-fit:cover;border-radius:12px"/>
+      fig.innerHTML = `<img src="${ph.src || ph.dataUrl}" alt="photo" style="width:100%;height:160px;object-fit:cover;border-radius:12px"/>
       <figcaption style="padding:8px 6px" class="muted">${ph.caption||''}</figcaption>`;
       grid.appendChild(fig);
     });
   }
+
+  function setupPhotoUI(){
+    const note = document.getElementById('photosModeNote');
+    const dz = document.getElementById('dropzone');
+    const addRepoBtn = document.getElementById('addRepoPhoto');
+    if(!note||!dz||!addRepoBtn) return;
+    if(PHOTO_MODE==='repo'){
+      if(note) note.innerHTML = 'This gallery references images stored in your repo under <code>/photos</code>. Upload files there and add entries with “Add Repo Photo.”';
+      if(dz) dz.style.display = ADMIN_MODE ? 'none' : 'none';
+      if(addRepoBtn) addRepoBtn.style.display = ADMIN_MODE ? 'inline-block' : 'none';
+    } else {
+      if(note) note.textContent = 'Images stay in your browser (localStorage). To put them online, upload files to a /photos folder in your repo, then add them here as “repo photos.”';
+      if(dz) dz.style.display = ADMIN_MODE ? 'block' : 'none';
+      if(addRepoBtn) addRepoBtn.style.display = 'none';
+    }
+  }
+
+  // Add repo photo entries (file must already be uploaded to /photos in your repo)
+  document.addEventListener('click', (ev)=>{
+    const btn = ev.target.closest('#addRepoPhoto');
+    if(!btn) return;
+    const filename = prompt('Filename under /photos (e.g., my-granddad.jpg)');
+    if(!filename) return;
+    const caption = prompt('Caption (optional)') || '';
+    store.photos.push({ id:'ph-'+Math.random().toString(36).slice(2,8), src:'photos/'+filename.replace(/^\?photos\\//i,'').replace(/^\/+/, ''), caption });
+    saveLocal(); renderPhotos();
+  });
 
   $('#dropzone').addEventListener('click', ()=> $('#photoInput').click());
   $('#dropzone').addEventListener('dragover', (e)=>{ e.preventDefault(); e.dataTransfer.dropEffect='copy'; });
@@ -561,6 +605,10 @@
   $('#clearPhotos').onclick = ()=>{ if(confirm('Clear all photos from browser storage?')){ store.photos=[]; saveLocal(); renderPhotos(); }}
 
   function handleFiles(files){
+    if(PHOTO_MODE==='repo'){
+      alert('Repo photo mode: upload your images to /photos in your repo, then use “Add Repo Photo” to reference them.');
+      return;
+    }
     [...files].forEach(file=>{
       const reader = new FileReader();
       reader.onload = () => {
@@ -569,28 +617,56 @@
       };
       reader.readAsDataURL(file);
     });
+  });
+        saveLocal(); renderPhotos();
+      };
+      reader.readAsDataURL(file);
+    });
   }
 
   // Simple Tree renderer (nested UL) from chosen root
   function renderTree(){
-    const rootId = $('#rootSelect').value || store.people[0]?.id; if(!rootId) return;
+    const rootId = $('#rootSelect').value || store.people[0]?.id; 
+    if(!rootId) return;
+    currentRootId = rootId;
     const root = byId(rootId);
-    const view = $('#treeView'); view.innerHTML='';
+    const view = $('#treeView'); 
+    view.innerHTML='';
     const ul = document.createElement('ul');
     ul.appendChild(renderNode(root));
     view.appendChild(ul);
+    // expanded by default
+    expandTree(true);
+    // center on root node after render
+    setTimeout(centerRoot, 0);
+  }
+  function expandTree(open=true){
+    $$('#treeView details').forEach(d => d.open = !!open);
+  }
+  function centerRoot(){
+    const el = $('#treeView [data-id="'+currentRootId+'"]');
+    if(el) el.scrollIntoView({behavior:'smooth', block:'center'});
   }
   function renderNode(person){
     const li = document.createElement('li');
     const mate = person.spouse ? byId(person.spouse) : null;
     const life = `${person.birth||'—'}–${person.death||''}`;
-    li.innerHTML = `<div class="pill" title="${person.notes||''}">${person.name} <span class="muted"> ${life}</span>${mate?` \u2022 <b>sp.</b> ${mate.name}`:''}</div>`;
     const kids = childrenOf(person.id);
     if(kids.length){
+      const details = document.createElement('details');
+      details.open = true; // expanded by default
+      details.setAttribute('data-id', person.id);
+      const summary = document.createElement('summary');
+      summary.innerHTML = `<span class="pill" title="${person.notes||''}">${person.name} <span class="muted"> ${life}</span>${mate?` • <b>sp.</b> ${mate.name}`:''}</span>`;
+      details.appendChild(summary);
       const ul = document.createElement('ul');
       kids.sort((a,b)=> (a.birth||9999)-(b.birth||9999));
       kids.forEach(k => ul.appendChild(renderNode(k)));
-      li.appendChild(ul);
+      details.appendChild(ul);
+      li.appendChild(details);
+    } else {
+      li.setAttribute('data-id', person.id);
+      li.innerHTML = `<div class="pill" title="${person.notes||''}">${person.name} <span class="muted"> ${life}</span>${mate?` • <b>sp.</b> ${mate.name}`:''}</div>`;
     }
     return li;
   }
@@ -630,11 +706,11 @@
   $('#prettyJson').onclick = () => { $('#rawJson').value = JSON.stringify(store,null,2); };
 
   // Root select syncing
-  $('#rootSelect').addEventListener('change', ()=> $('#rootSelect2').value = $('#rootSelect').value);
-  $('#rootSelect2').addEventListener('change', ()=> $('#rootSelect').value = $('#rootSelect2').value);
-  $('#centerOnRoot').onclick = () => { $('#treeView').scrollIntoView({behavior:'smooth', block:'start'}); };
-  $('#expandAll').onclick = () => { $$('#tree li').forEach(li=>li.open=true); };
-  $('#collapseAll').onclick = () => { /* visual only via CSS; list is simple */ };
+  $('#rootSelect').addEventListener('change', ()=> { $('#rootSelect2').value = $('#rootSelect').value; renderTree(); centerRoot(); });
+  $('#rootSelect2').addEventListener('change', ()=> { $('#rootSelect').value = $('#rootSelect2').value; renderTree(); centerRoot(); });
+  $('#centerOnRoot').onclick = () => centerRoot();
+  $('#expandAll').onclick = () => expandTree(true);
+  $('#collapseAll').onclick = () => expandTree(false);
 
   // Hook up form buttons
   $('#addPersonBtn').onclick = () => { resetForm(); document.getElementById('editPanel')?.scrollIntoView({behavior:'smooth', block:'start'}); $('#p_name').focus(); };
@@ -657,7 +733,7 @@
   (function init(){
     buildTabs();
     populateAllSelects();
-    renderPeople(); renderStories(); renderPhotos(); renderTimeline();
+    renderPeople(); renderStories(); setupPhotoUI(); renderPhotos(); renderTimeline();
     $('#year').textContent = new Date().getFullYear();
   })();
   </script>
